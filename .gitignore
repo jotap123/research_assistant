@@ -33,6 +33,7 @@ sdist/
 var/
 wheels/
 share/python-wheels/
+vectorstore/
 *.egg-info/
 .installed.cfg
 *.egg

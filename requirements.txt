@@ -1,2 +1,16 @@
 paeio
-scikit-learn
+transformers
+einops
+accelerate
+bitsandbytes
+torch
+langchain
+langchain-community
+langchain-huggingface
+langchainhub
+langchain_chroma
+langchain_ollama
+langchain_openai
+wikipedia
+faiss-cpu
+streamlit
