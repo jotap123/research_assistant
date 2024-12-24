@@ -1,74 +1,71 @@
+import tempfile
 import streamlit as st
-import os
-from tempfile import NamedTemporaryFile
-from doc_handler.llm.chat import LLMAgent  # Import the LLMAgent class from previous code
+
+from pathlib import Path
+from langchain_core.messages import AIMessage, HumanMessage
+
+from doc_handler.llm.utils import AgentConfig
+from doc_handler.llm.chat import LLMAgent
+
+
+def init_agent():
+    if 'agent' not in st.session_state:
+        config = AgentConfig()
+        st.session_state.agent = LLMAgent(config)
+        st.session_state.messages = []
 
 
 def save_uploaded_file(uploaded_file):
-    """Save uploaded file to a temporary file and return the path."""
-    if uploaded_file is not None:
-        # Create a temporary file
-        with NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
-            tmp_file.write(uploaded_file.getvalue())
-            return tmp_file.name
-    return None
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
+        tmp_file.write(uploaded_file.getvalue())
+        return tmp_file.name
 
 
 def app():
-    st.title("🤖 AI Assistant with PDF Knowledge")
-    st.write("""
-    This AI assistant can answer questions based on uploaded PDF documents or search the internet if no PDF is provided.
-    """)
+    st.title("AI Assistant")
+    init_agent()
 
-    # Initialize session state for chat history
-    if 'messages' not in st.session_state:
-        st.session_state.messages = []
-
-    # Initialize agent
-    agent = LLMAgent()
-
-    # File uploader
-    uploaded_file = st.file_uploader("Upload a PDF document (optional)", type="pdf")
-    
-    if uploaded_file:
-        if 'current_file' not in st.session_state or st.session_state.current_file != uploaded_file.name:
+    with st.sidebar:
+        uploaded_file = st.file_uploader("Upload PDF (Optional)", type="pdf")
+        if uploaded_file and 'current_file' not in st.session_state:
             with st.spinner("Processing PDF..."):
-                # Save uploaded file and load it into the agent
                 pdf_path = save_uploaded_file(uploaded_file)
-                agent.load_pdf(pdf_path)
+                st.session_state.agent.load_pdf(pdf_path)
                 st.session_state.current_file = uploaded_file.name
-                os.unlink(pdf_path)  # Clean up temporary file
-            st.success("PDF processed successfully!")
+                Path(pdf_path).unlink()
+            st.success("PDF processed!")
 
-    # Display chat messages
+        if st.button("Clear Chat"):
+            st.session_state.messages = []
+            st.rerun()
+
     for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            st.write(message["content"])
+        if isinstance(message, AIMessage):
+            with st.chat_message("AI"):
+                st.write(message.content)
+        elif isinstance(message, HumanMessage):
+            with st.chat_message("Human"):
+                st.write(message.content)
 
-    # Chat input
-    if prompt := st.chat_input("Ask a question"):
-        # Display user message
+    if prompt := st.chat_input("Enter your message"):
         with st.chat_message("user"):
             st.write(prompt)
-        st.session_state.messages.append({"role": "user", "content": prompt})
 
-        # Generate and display assistant response
         with st.chat_message("assistant"):
             with st.spinner("Thinking..."):
-                response = st.session_state.agent.invoke(prompt)
+                response = st.session_state.agent.process_query(prompt)
                 st.write(response)
-        st.session_state.messages.append({"role": "assistant", "content": response})
 
     # Sidebar with information
     with st.sidebar:
         st.header("About")
         st.write("""
         This AI assistant uses:
-        - GPT-4 for generating responses
+        - Open source LLMs for generating responses
         - RAG (Retrieval-Augmented Generation) for PDF knowledge
         - Tavily for web search when no PDF is provided
         """)
-        
+
         # Clear chat button
         if st.button("Clear Chat"):
             st.session_state.messages = []
