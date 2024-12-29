@@ -4,14 +4,12 @@ import streamlit as st
 from pathlib import Path
 from langchain_core.messages import AIMessage, HumanMessage
 
-from doc_handler.llm.utils import AgentConfig
 from doc_handler.llm.chat import LLMAgent
 
 
 def init_agent():
     if 'agent' not in st.session_state:
-        config = AgentConfig()
-        st.session_state.agent = LLMAgent(config)
+        st.session_state.agent = LLMAgent()
         st.session_state.messages = []
 
 
@@ -65,11 +63,6 @@ def app():
         - RAG (Retrieval-Augmented Generation) for PDF knowledge
         - Tavily for web search when no PDF is provided
         """)
-
-        # Clear chat button
-        if st.button("Clear Chat"):
-            st.session_state.messages = []
-            st.rerun()
 
 if __name__ == "__main__":
     app()

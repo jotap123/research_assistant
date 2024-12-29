@@ -1,11 +1,11 @@
-from typing import Dict, List, Optional
+from typing import Dict, List, Any, Optional
 from enum import Enum
 from pydantic import BaseModel, Field
 
 
 class ConversationState(BaseModel):
     """Encapsulates the conversation state."""
-    memory: List[Dict] = Field(default_factory=list)
+    memory: List[Any] = Field(default_factory=list)
     context: Optional[str] = ""
     action_plan: Optional[Dict] = None
     summary: Optional[str] = None
@@ -21,7 +21,7 @@ class AgentConfig(BaseModel):
 class RetrievalAction(str, Enum):
     SEARCH = "search"
     PDF = "pdf"
-    BOTH = "both"
+    ERROR = "error"
     NONE = "none"
 
 

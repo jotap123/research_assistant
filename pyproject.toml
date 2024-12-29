@@ -7,7 +7,6 @@ name = "doc_handler"
 version = "0.0.1"
 description = "LLM chat to do research on the internet and in documents"
 authors = [{ name = "jotapedro1997@gmail.com" }]
-{% if cookiecutter.open_source_license != 'No license file' %}license = { file = "LICENSE" }{% endif %}
 readme = "README.md"
 classifiers = [
     "Programming Language :: Python :: 3.9",

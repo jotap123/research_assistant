@@ -23,51 +23,42 @@ class LLMAgent:
         self.config = config or AgentConfig()
         self.search = TavilySearchResults(max_results=self.config.max_search_results)
         self.llm = load_llm_chat(chat)
-        self.embeddings = HuggingFaceEmbeddings(model_name="BAAI/bge-m3")
+        self.embeddings = HuggingFaceEmbeddings(model_name="BAAI/bge-m3", model_kwargs={'device': 'cuda'})
         self.vectorstore = None
+        self.state = ConversationState(memory=[])
         self.graph = self.build_graph()
 
-
-    def summarize_memory(self, state: ConversationState) -> ConversationState:
-        try:
-            prompt = ChatPromptTemplate.from_messages([
-                ("system", "Summarize the following conversation history:"),
-                ("user", "{history}")
-            ])
-            chain = prompt | self.llm | StrOutputParser()
-            history_text = "\n".join([msg["content"] for msg in state.memory[:-2]])
-            summary = chain.invoke({"history": history_text})
-            state.memory = state.memory[-2:]
-            state.summary = summary
-        except Exception as e:
-            logging.error(f"Memory summarization failed: {e}")
-            state.summary = "Summary generation failed"
-        return state
-    
-
-    def should_continue(self, state: ConversationState) -> bool:
-        """Determines whether memory summarization is needed."""
-        return len(state.memory) > self.config.memory_summarizer_threshold
+        self.graph.get_graph().draw_mermaid_png(output_file_path="graph.png")
 
 
     def determine_action(self, state: ConversationState) -> ConversationState:
         try:
             prompt = ChatPromptTemplate.from_messages([
-                ("system", """Analyze the query and decide:
-                - SEARCH: For general or current info
-                - PDF: For document-specific queries
-                - BOTH: To combine sources
-                - NONE: For conversational queries."""),
+                ("system", """Based on the conversation history and context, determine the best action:
+                - SEARCH: For current or general information needs
+                - NONE: For conversational responses
+                
+                Provide the action with a very brief explanation.
+                Previous Context: {summary}"""),
                 MessagesPlaceholder(variable_name="messages")
             ])
-            parser = PydanticOutputParser(pydantic_object=ActionPlan)
-            chain = prompt | self.llm | parser
-            result = chain.invoke({"messages": state.memory})
-            state.action_plan = result.dict()
+            chain = prompt | self.llm | StrOutputParser()
+            result = chain.invoke({
+                "messages": [msg.dict() for msg in state.memory],
+                "summary": state.summary or "No previous context available."
+            })
+
+            # Validate and store the generated action plan in the state.
+            if "SEARCH" in result.upper():
+                state['action_plan'].action = RetrievalAction.SEARCH
+            elif "NONE" in result.upper():
+                state['action_plan'].action = RetrievalAction.NONE
+
+            logging.info(f"Determined action: {state['action_plan'].action}")
         except Exception as e:
             logging.error(f"Action determination failed: {e}")
             state.action_plan = ActionPlan(
-                action=RetrievalAction.NONE,
+                action=RetrievalAction.ERROR,
                 reasoning="Error in action determination"
             ).model_dump()
         return state
@@ -92,18 +83,41 @@ class LLMAgent:
 
     def retrieve_context(self, state: ConversationState) -> ConversationState:
         context_parts = []
-        plan = ActionPlan.model_validate(state.action_plan)
-        query = plan.search_query or state.memory[-1]["content"]
+        query = state.memory[-1]["content"]
+        
+        # Enhance query with conversation context
+        if state.summary:
+            query_terms = set(query.lower().split())
+            summary_terms = set(state.summary.lower().split())
+            relevant_context = " ".join(term for term in summary_terms if term in query_terms)
+            enhanced_query = f"{query} {relevant_context}".strip()
+        else:
+            enhanced_query = query
 
         try:
-            if plan.action in [RetrievalAction.PDF, RetrievalAction.BOTH] and self.vectorstore:
-                docs = self.vectorstore.similarity_search(query, k=3)
-                context_parts.append("PDF Context:\n" + "\n".join([doc.page_content for doc in docs]))
+            if state['action_plan'].action == RetrievalAction.SEARCH and self.vectorstore:
+                docs = self.vectorstore.similarity_search(enhanced_query, k=3)
+                # Filter for relevance
+                relevant_docs = [
+                    doc for doc in docs 
+                    if any(term in doc.page_content.lower() for term in query.lower().split())
+                ]
+                if relevant_docs:
+                    context_parts.append("PDF Context:\n" + "\n".join(
+                        [doc.page_content for doc in relevant_docs[:2]]
+                    ))
 
-            if plan.action in [RetrievalAction.SEARCH, RetrievalAction.BOTH]:
-                web_results = self.search.invoke(query)
-                context_parts.append("Web Search Results:\n" +
-                                   "\n".join([f"{r['title']}: {r['content']}" for r in web_results]))
+            else:
+                web_results = self.search.invoke(enhanced_query)
+                filtered_results = [
+                    r for r in web_results 
+                    if any(term in r['content'].lower() for term in query.lower().split())
+                ]
+                if filtered_results:
+                    context_parts.append("Web Search Results:\n" + "\n".join(
+                        [f"{r['title']}: {r['content']}" for r in filtered_results[:2]]
+                    ))
+
         except Exception as e:
             logging.error(f"Context retrieval failed: {e}")
             context_parts.append(f"Error retrieving context: {str(e)}")
@@ -115,10 +129,14 @@ class LLMAgent:
     def generate_response(self, state: ConversationState) -> ConversationState:
         try:
             prompt = ChatPromptTemplate.from_messages([
-                ("system", """Use the provided context to respond.
-                Context: {context}
+                ("system", """Generate a helpful response using the available information.
+                If the context is relevant, incorporate it naturally.
+                If information is missing, acknowledge limitations.
+                
+                Available Context: {context}
                 Previous Summary: {summary}"""),
-                MessagesPlaceholder(variable_name="messages")
+                MessagesPlaceholder(variable_name="messages"),
+                ("system", "Provide a clear, natural response that addresses the query directly.")
             ])
             chain = prompt | self.llm | StrOutputParser()
             response = chain.invoke({
@@ -129,7 +147,41 @@ class LLMAgent:
             state.memory.append(AIMessage(content=response))
         except Exception as e:
             logging.error(f"Response generation failed: {e}")
-            state.memory.append(AIMessage(content="I apologize, but I encountered an error generating a response."))
+            state.memory.append(
+                AIMessage(content="I apologize, but I encountered an error generating a response.")
+            )
+        return state
+
+
+    def should_continue(self, state: ConversationState) -> bool:
+        """Determines whether memory summarization is needed."""
+        if len(state.memory) > self.config.memory_summarizer_threshold:
+            return "summarize"
+        else:
+            return END 
+
+
+    def summarize_memory(self, state: ConversationState) -> ConversationState:
+        try:
+            prompt = ChatPromptTemplate.from_messages([
+                ("system", """Create a concise yet informative summary of the conversation history.
+                Include:
+                - Main topics and questions discussed
+                - Key information or preferences shared
+                - Important context for future responses"""),
+                ("user", "{history}")
+            ])
+            chain = prompt | self.llm | StrOutputParser()
+            history_text = "\n".join([
+                f"{'User' if i%2==0 else 'Assistant'}: {msg['content']}" 
+                for i, msg in enumerate(state.memory[:-2])
+            ])
+            summary = chain.invoke({"history": history_text})
+            state.memory = state.memory[-2:]
+            state.summary = summary
+        except Exception as e:
+            logging.error(f"Memory summarization failed: {e}")
+            state.summary = "Summary generation failed"
         return state
 
 
@@ -138,21 +190,21 @@ class LLMAgent:
         workflow = StateGraph(ConversationState)
 
         # Add nodes
-        workflow.add_node("check_summary", self.should_continue)
-        workflow.add_node("summarize", self.summarize_memory)
         workflow.add_node("plan", self.determine_action)
         workflow.add_node("retrieve", self.retrieve_context)
         workflow.add_node("generate", self.generate_response)
+        workflow.add_node("summarize", self.summarize_memory)
 
         # Add edges
-        workflow.add_conditional_edges("check_summary", {True: "summarize", False: "plan"})
-        workflow.add_edge("summarize", "plan")
-        workflow.add_edge("plan", "retrieve")
+        workflow.add_conditional_edges(
+            "plan", lambda x: "retrieve" if x['action_plan'].action == RetrievalAction.SEARCH else "END",
+            {"retrieve": "retrieve", "END": END}
+        )
         workflow.add_edge("retrieve", "generate")
-        workflow.add_edge("generate", END)
+        workflow.add_conditional_edges("generate", self.should_continue)
+        workflow.add_edge("summarize", END)
 
-        # Set entry point
-        workflow.set_entry_point("check_summary")
+        workflow.set_entry_point("plan")
 
         return workflow.compile()
 
