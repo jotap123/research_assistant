@@ -1,14 +1,8 @@
-from typing import Dict, List, Any, Optional
 from enum import Enum
-from pydantic import BaseModel, Field
-
-
-class ConversationState(BaseModel):
-    """Encapsulates the conversation state."""
-    memory: List[Any] = Field(default_factory=list)
-    context: Optional[str] = ""
-    action_plan: Optional[Dict] = None
-    summary: Optional[str] = None
+from typing import Dict, Optional
+from typing_extensions import TypedDict
+from pydantic import BaseModel
+from langgraph.graph import MessagesState
 
 
 class AgentConfig(BaseModel):
@@ -20,12 +14,11 @@ class AgentConfig(BaseModel):
 
 class RetrievalAction(str, Enum):
     SEARCH = "search"
-    PDF = "pdf"
     ERROR = "error"
     NONE = "none"
 
 
-class ActionPlan(BaseModel):
-    action: RetrievalAction
-    reasoning: str
-    search_query: Optional[str]
+class State(MessagesState):
+    summary: str = None
+    context: Optional[str] = ""
+    action_plan: RetrievalAction

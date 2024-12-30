@@ -23,6 +23,9 @@ def app():
     st.title("AI Assistant")
     init_agent()
 
+    if "chat_history" not in st.session_state:
+        st.session_state.chat_history = [AIMessage(content="""Hello! How can I help?""")]
+
     with st.sidebar:
         uploaded_file = st.file_uploader("Upload PDF (Optional)", type="pdf")
         if uploaded_file and 'current_file' not in st.session_state:
@@ -37,7 +40,24 @@ def app():
             st.session_state.messages = []
             st.rerun()
 
-    for message in st.session_state.messages:
+    # for message in st.session_state.messages:
+    #     if isinstance(message, AIMessage):
+    #         with st.chat_message("AI"):
+    #             st.write(message.content)
+    #     elif isinstance(message, HumanMessage):
+    #         with st.chat_message("Human"):
+    #             st.write(message.content)
+
+    # if prompt := st.chat_input("Enter your message"):
+    #     with st.chat_message("user"):
+    #         st.write(prompt)
+
+    #     with st.chat_message("assistant"):
+    #         with st.spinner("Thinking..."):
+    #             response = st.session_state.agent.process_query(prompt)
+    #             st.write(response)
+    
+    for message in st.session_state.chat_history:
         if isinstance(message, AIMessage):
             with st.chat_message("AI"):
                 st.write(message.content)
@@ -45,14 +65,24 @@ def app():
             with st.chat_message("Human"):
                 st.write(message.content)
 
-    if prompt := st.chat_input("Enter your message"):
-        with st.chat_message("user"):
-            st.write(prompt)
+    user_query = st.chat_input("Enter your query")
+    if user_query is not None and user_query != "":
+        st.session_state.chat_history.append(HumanMessage(content=user_query))
 
-        with st.chat_message("assistant"):
+        with st.chat_message("Human"):
+            st.markdown(user_query)
+
+        with st.chat_message("AI"):
             with st.spinner("Thinking..."):
-                response = st.session_state.agent.process_query(prompt)
-                st.write(response)
+                # Get the response from the agent
+                ai_response = st.session_state.agent.process_query(user_query)
+
+                # Display the response in the chat
+                st.write(ai_response)
+
+                # Wrap the response in an AIMessage object and save it
+                ai_message = AIMessage(content=ai_response)
+                st.session_state.chat_history.append(ai_message)
 
     # Sidebar with information
     with st.sidebar:

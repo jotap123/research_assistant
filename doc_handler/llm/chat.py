@@ -1,66 +1,70 @@
 import logging
 
 from typing import Optional
-from langchain_core.messages import HumanMessage, AIMessage
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, RemoveMessage
 from langchain_core.output_parsers import StrOutputParser, PydanticOutputParser
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.tools import tool
 from langchain_chroma import Chroma
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langgraph.graph import StateGraph, END
+from langgraph.graph import MessagesState, StateGraph, END 
 from langchain_community.tools.tavily_search import TavilySearchResults
+from langgraph.checkpoint.memory import MemorySaver
+from langgraph.prebuilt import create_react_agent
 
 from doc_handler.config import chat
 from doc_handler.utils import load_llm_chat
-from doc_handler.llm.utils import ConversationState, ActionPlan, AgentConfig, RetrievalAction
+from doc_handler.llm.utils import AgentConfig, RetrievalAction, State
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 
 class LLMAgent:
-    def __init__(self, config: Optional[AgentConfig] = None):
-        self.config = config or AgentConfig()
+    def __init__(self):
+        self.config = AgentConfig()
         self.search = TavilySearchResults(max_results=self.config.max_search_results)
         self.llm = load_llm_chat(chat)
-        self.embeddings = HuggingFaceEmbeddings(model_name="BAAI/bge-m3", model_kwargs={'device': 'cuda'})
+        self.embeddings = HuggingFaceEmbeddings(model_name="BAAI/bge-m3")
         self.vectorstore = None
-        self.state = ConversationState(memory=[])
+        self.memory = MemorySaver()
+        self.state_config = {"configurable": {"thread_id": "1"}}
         self.graph = self.build_graph()
 
         self.graph.get_graph().draw_mermaid_png(output_file_path="graph.png")
 
 
-    def determine_action(self, state: ConversationState) -> ConversationState:
+    def determine_action(self, state: State) -> State:
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", """Determine the best action to be made by the following rules:
+            - If the query is asking for a factual or current information: SEARCH
+            - If its a normal conversation that does not involve fact checking or
+             it is about something you have good knowledge on: NONE
+            - If you can't decide between the actions above or the query does not make sense: ERROR
+            Return SEARCH, NONE or ERROR, nothing more.
+            Context: {summary}"""),
+            MessagesPlaceholder(variable_name="messages"),
+            ("system", """DO NOT GIVE EXPLANATIONS!""")
+        ])
+
+        chain = prompt | self.llm | StrOutputParser()
         try:
-            prompt = ChatPromptTemplate.from_messages([
-                ("system", """Based on the conversation history and context, determine the best action:
-                - SEARCH: For current or general information needs
-                - NONE: For conversational responses
-                
-                Provide the action with a very brief explanation.
-                Previous Context: {summary}"""),
-                MessagesPlaceholder(variable_name="messages")
-            ])
-            chain = prompt | self.llm | StrOutputParser()
             result = chain.invoke({
-                "messages": [msg.dict() for msg in state.memory],
-                "summary": state.summary or "No previous context available."
+                "messages": state["messages"],
+                "summary": state.get("summary", "")
             })
+            state["action_plan"] = (
+                RetrievalAction.SEARCH if "SEARCH" in result.upper()
+                else RetrievalAction.NONE if "NONE" in result.upper()
+                else RetrievalAction.ERROR
+            )
 
-            # Validate and store the generated action plan in the state.
-            if "SEARCH" in result.upper():
-                state['action_plan'].action = RetrievalAction.SEARCH
-            elif "NONE" in result.upper():
-                state['action_plan'].action = RetrievalAction.NONE
-
-            logging.info(f"Determined action: {state['action_plan'].action}")
         except Exception as e:
             logging.error(f"Action determination failed: {e}")
-            state.action_plan = ActionPlan(
-                action=RetrievalAction.ERROR,
-                reasoning="Error in action determination"
-            ).model_dump()
+            state['action_plan'] = RetrievalAction.ERROR
+            state['messages'].append(AIMessage(content=f"System error: Error in {e}"))
+
         return state
 
 
@@ -81,124 +85,113 @@ class LLMAgent:
             raise RuntimeError(f"Failed to load PDF: {e}")
 
 
-    def retrieve_context(self, state: ConversationState) -> ConversationState:
-        context_parts = []
-        query = state.memory[-1]["content"]
-        
-        # Enhance query with conversation context
-        if state.summary:
-            query_terms = set(query.lower().split())
-            summary_terms = set(state.summary.lower().split())
-            relevant_context = " ".join(term for term in summary_terms if term in query_terms)
-            enhanced_query = f"{query} {relevant_context}".strip()
-        else:
-            enhanced_query = query
+    def retrieve_context(self, state: State) -> State:
+        if state['action_plan'] != RetrievalAction.SEARCH:
+            state['context'] = "No context retrieved"
+            return state
+
+        query = state['messages'][-1].content
 
         try:
-            if state['action_plan'].action == RetrievalAction.SEARCH and self.vectorstore:
-                docs = self.vectorstore.similarity_search(enhanced_query, k=3)
-                # Filter for relevance
-                relevant_docs = [
-                    doc for doc in docs 
-                    if any(term in doc.page_content.lower() for term in query.lower().split())
-                ]
-                if relevant_docs:
-                    context_parts.append("PDF Context:\n" + "\n".join(
-                        [doc.page_content for doc in relevant_docs[:2]]
-                    ))
+            if self.vectorstore:
+                context_parts = []
+                docs = self.vectorstore.similarity_search(query, k=3)
+                context_parts.extend([doc.page_content for doc in docs])
+                state['context'] = "\n\n".join(context_parts) if context_parts else "No relevant context found."
 
             else:
-                web_results = self.search.invoke(enhanced_query)
-                filtered_results = [
-                    r for r in web_results 
-                    if any(term in r['content'].lower() for term in query.lower().split())
-                ]
-                if filtered_results:
-                    context_parts.append("Web Search Results:\n" + "\n".join(
-                        [f"{r['title']}: {r['content']}" for r in filtered_results[:2]]
-                    ))
+                search_results = self.search.invoke(query)
+                state['context'] = str(search_results)
 
         except Exception as e:
             logging.error(f"Context retrieval failed: {e}")
-            context_parts.append(f"Error retrieving context: {str(e)}")
+            state['context'] = f"Error retrieving context: {str(e)}"
 
-        state.context = "\n\n".join(context_parts) if context_parts else "No relevant context found."
         return state
 
 
-    def generate_response(self, state: ConversationState) -> ConversationState:
-        try:
+    def generate_response(self, state: State) -> State:
+        if state['action_plan'] != RetrievalAction.NONE:
+            print("NAO FOI NONE")
             prompt = ChatPromptTemplate.from_messages([
-                ("system", """Generate a helpful response using the available information.
-                If the context is relevant, incorporate it naturally.
-                If information is missing, acknowledge limitations.
-                
-                Available Context: {context}
+                ("system", """Generate a helpful response using the search results. And incorporate it naturally.
+                Include relevant citations [Source: URL].
+                If information is missing or outdated, acknowledge limitations.
+
+                Avaliable context: {context}
                 Previous Summary: {summary}"""),
                 MessagesPlaceholder(variable_name="messages"),
-                ("system", "Provide a clear, natural response that addresses the query directly.")
+                ("system", "Provide a clear response incorporating the search information naturally.")
+            ])
+
+            try: 
+                chain = prompt | self.llm | StrOutputParser()
+                messages = chain.invoke({
+                    "context": state['context'],
+                    "summary": state.get("summary", ""),
+                    "messages": state['messages']
+                })
+
+            except Exception as e:
+                logging.error(f"Response generation failed: {e}")
+                state['messages'].append(
+                    AIMessage(content="I apologize, but I encountered an error generating a response.")
+                )
+        else:
+            print("FOI NONE")
+            prompt = ChatPromptTemplate.from_messages([
+                ("system", """You are a helpful assistant whose job is to respond to the user
+                 the best way possible. If you don't know about the topic just say so. Be concise"""),
+                MessagesPlaceholder(variable_name="messages"),
             ])
             chain = prompt | self.llm | StrOutputParser()
-            response = chain.invoke({
-                "context": state.context,
-                "summary": state.summary or "No previous summary",
-                "messages": state.memory
-            })
-            state.memory.append(AIMessage(content=response))
-        except Exception as e:
-            logging.error(f"Response generation failed: {e}")
-            state.memory.append(
-                AIMessage(content="I apologize, but I encountered an error generating a response.")
-            )
+            messages = chain.invoke({"messages": state['messages']})
+        
+        state["messages"].append(AIMessage(content=messages))
+
         return state
 
 
-    def should_continue(self, state: ConversationState) -> bool:
+    def should_continue(self, state: State) -> bool:
         """Determines whether memory summarization is needed."""
-        if len(state.memory) > self.config.memory_summarizer_threshold:
+        if len(state["messages"]) > self.config.memory_summarizer_threshold:
             return "summarize"
         else:
-            return END 
+            return END
 
 
-    def summarize_memory(self, state: ConversationState) -> ConversationState:
-        try:
-            prompt = ChatPromptTemplate.from_messages([
-                ("system", """Create a concise yet informative summary of the conversation history.
-                Include:
-                - Main topics and questions discussed
-                - Key information or preferences shared
-                - Important context for future responses"""),
-                ("user", "{history}")
-            ])
-            chain = prompt | self.llm | StrOutputParser()
-            history_text = "\n".join([
-                f"{'User' if i%2==0 else 'Assistant'}: {msg['content']}" 
-                for i, msg in enumerate(state.memory[:-2])
-            ])
-            summary = chain.invoke({"history": history_text})
-            state.memory = state.memory[-2:]
-            state.summary = summary
-        except Exception as e:
-            logging.error(f"Memory summarization failed: {e}")
-            state.summary = "Summary generation failed"
-        return state
+    def summarize_conversation(self, state: State):
+        summary = state.get("summary", "")
+
+        if summary:
+            summary_message = (
+                f"This is summary of the conversation to date: {summary}\n\n"
+                "Extend the summary by taking into account the new messages above:"
+            )
+        else:
+            summary_message = "Create a summary of the conversation above:"
+
+        messages = state["messages"] + [HumanMessage(content=summary_message)]
+        response = self.llm.invoke(messages)
+        
+        delete_messages = [RemoveMessage(id=m.id) for m in state["messages"][:-2]]
+        return {"summary": response.content, "messages": delete_messages}
 
 
     def build_graph(self) -> StateGraph:
         """Build the enhanced LangGraph workflow."""
-        workflow = StateGraph(ConversationState)
+        workflow = StateGraph(State)
 
-        # Add nodes
         workflow.add_node("plan", self.determine_action)
         workflow.add_node("retrieve", self.retrieve_context)
         workflow.add_node("generate", self.generate_response)
-        workflow.add_node("summarize", self.summarize_memory)
+        workflow.add_node("summarize", self.summarize_conversation)
 
-        # Add edges
         workflow.add_conditional_edges(
-            "plan", lambda x: "retrieve" if x['action_plan'].action == RetrievalAction.SEARCH else "END",
-            {"retrieve": "retrieve", "END": END}
+            "plan",
+            lambda x: "retrieve" if x['action_plan'] == RetrievalAction.SEARCH
+                else "generate" if x['action_plan'] == RetrievalAction.NONE else "END",
+            {"retrieve": "retrieve", "generate": "generate", "END": END}
         )
         workflow.add_edge("retrieve", "generate")
         workflow.add_conditional_edges("generate", self.should_continue)
@@ -206,15 +199,13 @@ class LLMAgent:
 
         workflow.set_entry_point("plan")
 
-        return workflow.compile()
+        return workflow.compile(checkpointer=self.memory)
 
 
     def process_query(self, query: str) -> str:
         try:
-            self.state.memory.append(HumanMessage(content=query))
-            result_state = self.graph.invoke(self.state)
-            response = result_state.memory[-1].content
-            self.state = result_state
+            result_state = self.graph.invoke({"messages": query}, self.state_config)
+            response = result_state['messages'][-1].content
             return response
         except Exception as e:
             logging.error(f"Query processing failed: {e}")
