@@ -1,18 +1,15 @@
 import logging
 
-from typing import Optional
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, RemoveMessage
-from langchain_core.output_parsers import StrOutputParser, PydanticOutputParser
+from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.tools import tool
 from langchain_chroma import Chroma
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langgraph.graph import MessagesState, StateGraph, END 
+from langgraph.graph import StateGraph, END 
 from langchain_community.tools.tavily_search import TavilySearchResults
 from langgraph.checkpoint.memory import MemorySaver
-from langgraph.prebuilt import create_react_agent
 
 from doc_handler.config import chat
 from doc_handler.utils import load_llm_chat
@@ -79,7 +76,7 @@ class LLMAgent:
             chunks = splitter.split_documents(documents)
             self.vectorstore = Chroma.from_documents(chunks, self.embeddings)
             logging.info(f"Successfully loaded PDF: {pdf_file}")
-        
+
         except Exception as e:
             logging.error(f"PDF loading failed: {e}")
             raise RuntimeError(f"Failed to load PDF: {e}")
@@ -95,7 +92,7 @@ class LLMAgent:
         try:
             if self.vectorstore:
                 context_parts = []
-                docs = self.vectorstore.similarity_search(query, k=3)
+                docs = self.vectorstore.similarity_search(query, k=5)
                 context_parts.extend([doc.page_content for doc in docs])
                 state['context'] = "\n\n".join(context_parts) if context_parts else "No relevant context found."
 
@@ -115,16 +112,15 @@ class LLMAgent:
             print("NAO FOI NONE")
             prompt = ChatPromptTemplate.from_messages([
                 ("system", """Generate a helpful response using the search results. And incorporate it naturally.
-                Include relevant citations [Source: URL].
+                Include relevant citations if you grabbed the information on the internet [Source: URL].
                 If information is missing or outdated, acknowledge limitations.
 
                 Avaliable context: {context}
                 Previous Summary: {summary}"""),
-                MessagesPlaceholder(variable_name="messages"),
-                ("system", "Provide a clear response incorporating the search information naturally.")
+                MessagesPlaceholder(variable_name="messages")
             ])
 
-            try: 
+            try:
                 chain = prompt | self.llm | StrOutputParser()
                 messages = chain.invoke({
                     "context": state['context'],
@@ -179,7 +175,6 @@ class LLMAgent:
 
 
     def build_graph(self) -> StateGraph:
-        """Build the enhanced LangGraph workflow."""
         workflow = StateGraph(State)
 
         workflow.add_node("plan", self.determine_action)

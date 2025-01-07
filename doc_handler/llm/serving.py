@@ -40,23 +40,6 @@ def app():
             st.session_state.messages = []
             st.rerun()
 
-    # for message in st.session_state.messages:
-    #     if isinstance(message, AIMessage):
-    #         with st.chat_message("AI"):
-    #             st.write(message.content)
-    #     elif isinstance(message, HumanMessage):
-    #         with st.chat_message("Human"):
-    #             st.write(message.content)
-
-    # if prompt := st.chat_input("Enter your message"):
-    #     with st.chat_message("user"):
-    #         st.write(prompt)
-
-    #     with st.chat_message("assistant"):
-    #         with st.spinner("Thinking..."):
-    #             response = st.session_state.agent.process_query(prompt)
-    #             st.write(response)
-    
     for message in st.session_state.chat_history:
         if isinstance(message, AIMessage):
             with st.chat_message("AI"):
