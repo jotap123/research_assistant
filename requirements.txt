@@ -9,4 +9,5 @@ langchainhub==0.1.21
 langchain_chroma==0.1.4
 faiss-cpu==1.9.0
 streamlit==1.39.0
+pysqlite3-binary
 -e .
