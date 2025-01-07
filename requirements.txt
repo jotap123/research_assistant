@@ -14,3 +14,4 @@ langchain_openai
 wikipedia
 faiss-cpu
 streamlit
+-e .
