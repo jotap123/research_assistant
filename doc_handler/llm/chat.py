@@ -33,7 +33,7 @@ class LLMAgent:
         self.state_config = {"configurable": {"thread_id": "1"}}
         self.graph = self.build_graph()
 
-        self.graph.get_graph().draw_mermaid_png(output_file_path="graph.png")
+        # self.graph.get_graph().draw_mermaid_png(output_file_path="graph.png")
 
 
     def determine_action(self, state: State) -> State:
@@ -188,9 +188,12 @@ class LLMAgent:
 
         workflow.add_conditional_edges(
             "plan",
-            lambda x: "retrieve" if x['action_plan'] == RetrievalAction.SEARCH
-                else "generate" if x['action_plan'] == RetrievalAction.NONE else "END",
-            {"retrieve": "retrieve", "generate": "generate", "END": END}
+            lambda x: x['action_plan'],
+            {
+                RetrievalAction.SEARCH: "retrieve",
+                RetrievalAction.NONE: "generate",
+                RetrievalAction.ERROR: END
+            }
         )
         workflow.add_edge("retrieve", "generate")
         workflow.add_conditional_edges("generate", self.should_continue)
