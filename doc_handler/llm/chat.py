@@ -42,7 +42,7 @@ class LLMAgent:
             - If the query is asking for a factual or current information: SEARCH
             - If its a normal conversation that does not involve fact checking or
              it is about something you have good knowledge on: NONE
-            - If you can't decide between the actions above or the query does not make sense: ERROR
+            - If the query does not make sense: ERROR
             Return SEARCH, NONE or ERROR, nothing more.
             Context: {summary}"""),
             MessagesPlaceholder(variable_name="messages"),
@@ -60,6 +60,9 @@ class LLMAgent:
                 else RetrievalAction.NONE if "NONE" in result.upper()
                 else RetrievalAction.ERROR
             )
+
+            if state["action_plan"] == RetrievalAction.ERROR:
+                state['messages'].append(AIMessage(content=f"Sorry. But I couldn't understand you."))
 
         except Exception as e:
             logging.error(f"Action determination failed: {e}")
@@ -117,7 +120,7 @@ class LLMAgent:
             prompt = ChatPromptTemplate.from_messages([
                 ("system", """Generate a helpful response using the search results. And incorporate it naturally.
                 Include relevant citations if you grabbed the information on the internet [Source: URL].
-                If information is missing or outdated, acknowledge limitations.
+                If you can't find relevant information just say so.
 
                 Avaliable context: {context}
                 Previous Summary: {summary}"""),
