@@ -62,6 +62,7 @@ class LLMAgent:
             )
 
             if state["action_plan"] == RetrievalAction.ERROR:
+                self.memory.clear()
                 state['messages'].append(AIMessage(content=f"Sorry. But I couldn't understand you."))
 
         except Exception as e:
