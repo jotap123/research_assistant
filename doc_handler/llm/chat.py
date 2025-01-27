@@ -117,7 +117,6 @@ class LLMAgent:
 
     def generate_response(self, state: State) -> State:
         if state['action_plan'] != RetrievalAction.NONE:
-            print("NAO FOI NONE")
             prompt = ChatPromptTemplate.from_messages([
                 ("system", """Generate a helpful response using the search results. And incorporate it naturally.
                 Include relevant citations if you grabbed the information on the internet [Source: URL].
@@ -142,7 +141,6 @@ class LLMAgent:
                     AIMessage(content="I apologize, but I encountered an error generating a response.")
                 )
         else:
-            print("FOI NONE")
             prompt = ChatPromptTemplate.from_messages([
                 ("system", """You are a helpful assistant whose job is to respond to the user
                  the best way possible. If you don't know about the topic just say so. Be concise"""),
