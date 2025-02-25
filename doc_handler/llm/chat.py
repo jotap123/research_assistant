@@ -1,6 +1,6 @@
-__import__('pysqlite3')
-import sys
-sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
+#__import__('pysqlite3')
+#import sys
+#sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
 
 import logging
 
@@ -11,13 +11,14 @@ from langchain_chroma import Chroma
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langgraph.graph import StateGraph, END 
+from langgraph.graph import StateGraph, END
+from langgraph.graph.state import CompiledStateGraph
 from langchain_community.tools.tavily_search import TavilySearchResults
 from langgraph.checkpoint.memory import MemorySaver
 
 from doc_handler.config import chat
 from doc_handler.utils import load_llm_chat
-from doc_handler.llm.utils import AgentConfig, RetrievalAction, State
+from doc_handler.llm.state import AgentConfig, RetrievalAction, State
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -71,6 +72,19 @@ class LLMAgent:
             state['messages'].append(AIMessage(content=f"System error: Error in {e}"))
 
         return state
+    
+
+    def curate_query(self, state: State) -> State:
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", """Curate the query to make it ready for RAG search context. 
+             If the query is already clear, just repeat it.
+             Query: {query}
+             Don't give explanations, just curate the query.""")
+        ])
+        chain = prompt | self.llm | StrOutputParser()
+        state["curated_query"] = chain.invoke({"query": state['messages'][-1].content})
+
+        return state
 
 
     def load_pdf(self, pdf_file: str) -> None:
@@ -115,6 +129,23 @@ class LLMAgent:
         return state
 
 
+    def filter_context(self, state: State) -> State:
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", """Check which of the following context is relevant to the query.
+             Query: {query}
+             Context: {context}
+             Return parts of the context that are relevant to the query, without
+             any explanations.""")
+        ])
+        context = state["context"]
+        chain = prompt | self.llm | StrOutputParser()
+        state["context"] = chain.invoke(
+            {"context": context, "query": state["curated_query"]}
+        )
+
+        return state
+
+
     def generate_response(self, state: State) -> State:
         if state['action_plan'] != RetrievalAction.NONE:
             prompt = ChatPromptTemplate.from_messages([
@@ -131,7 +162,7 @@ class LLMAgent:
                 chain = prompt | self.llm | StrOutputParser()
                 messages = chain.invoke({
                     "context": state['context'],
-                    "summary": state.get("summary", ""),
+                    "summary": state.get("summary", "No summary"),
                     "messages": state['messages']
                 })
 
@@ -180,28 +211,31 @@ class LLMAgent:
         return {"summary": response.content, "messages": delete_messages}
 
 
-    def build_graph(self) -> StateGraph:
+    def build_graph(self) -> CompiledStateGraph:
         workflow = StateGraph(State)
 
         workflow.add_node("plan", self.determine_action)
+        workflow.add_node("curate_query", self.curate_query)
         workflow.add_node("retrieve", self.retrieve_context)
+        workflow.add_node("curate_context", self.filter_context)
         workflow.add_node("generate", self.generate_response)
         workflow.add_node("summarize", self.summarize_conversation)
 
+        workflow.set_entry_point("plan")
         workflow.add_conditional_edges(
             "plan",
             lambda x: x['action_plan'],
             {
-                RetrievalAction.SEARCH: "retrieve",
+                RetrievalAction.SEARCH: "curate_query",
                 RetrievalAction.NONE: "generate",
                 RetrievalAction.ERROR: END
             }
         )
-        workflow.add_edge("retrieve", "generate")
+        workflow.add_edge("curate_query", "retrieve")
+        workflow.add_edge("retrieve", "curate_context")
+        workflow.add_edge("curate_context", "generate")
         workflow.add_conditional_edges("generate", self.should_continue)
         workflow.add_edge("summarize", END)
-
-        workflow.set_entry_point("plan")
 
         return workflow.compile(checkpointer=self.memory)
 

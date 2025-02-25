@@ -20,4 +20,5 @@ class RetrievalAction(str, Enum):
 class State(MessagesState):
     summary: str = None
     context: Optional[str] = ""
+    curated_query: Optional[str] = ""
     action_plan: RetrievalAction

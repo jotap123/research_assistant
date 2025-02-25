@@ -6,7 +6,9 @@ build-backend = "flit_core.buildapi"
 name = "doc_handler"
 version = "0.0.1"
 description = "LLM chat to do research on the internet and in documents"
-authors = [{ name = "jotapedro1997@gmail.com" }]
+authors = [
+  { name="João Pedro Alves", email="jotapedro1997@gmail.com" }
+]
 readme = "README.md"
 classifiers = [
     "Programming Language :: Python :: 3.9",
