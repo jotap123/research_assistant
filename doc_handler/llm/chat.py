@@ -4,7 +4,7 @@
 
 import logging
 
-from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, RemoveMessage
+from langchain_core.messages import HumanMessage, AIMessage, RemoveMessage
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_chroma import Chroma
@@ -131,10 +131,10 @@ class LLMAgent:
 
     def filter_context(self, state: State) -> State:
         prompt = ChatPromptTemplate.from_messages([
-            ("system", """Check which of the following context is relevant to the query.
+            ("system", """Check what parts of the following context are relevant to the query.
              Query: {query}
              Context: {context}
-             Return parts of the context that are relevant to the query, without
+             Return one or more parts of the context that are relevant to the query, without
              any explanations.""")
         ])
         context = state["context"]
