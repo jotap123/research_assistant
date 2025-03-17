@@ -79,7 +79,7 @@ class LLMAgent:
             ("system", """Curate the query to make it ready for RAG search context. 
              If the query is already clear, just repeat it.
              Query: {query}
-             Don't give explanations, just curate the query.""")
+             Don't give explanations, return only the curated query.""")
         ])
         chain = prompt | self.llm | StrOutputParser()
         state["curated_query"] = chain.invoke({"query": state['messages'][-1].content})
@@ -248,3 +248,7 @@ class LLMAgent:
         except Exception as e:
             logging.error(f"Query processing failed: {e}")
             return "I apologize, but I encountered an error processing your query."
+
+
+if __name__ == "__main__":
+    agent = LLMAgent()
